@@ -26,11 +26,12 @@ jobs:
           sudo luarocks install busted
           sudo luarocks install luassert
 
-      - name: Install Stylua (formatter)
-        run: |
-          curl -sSL https://github.com/JohnnyMorganz/StyLua/releases/latest/download/stylua-linux.zip -o stylua.zip
-          sudo unzip -q stylua.zip -d /usr/local/bin
-          rm stylua.zip
+        # FIXME: will fix later
+        # - name: Install Stylua (formatter)
+        #   run: |
+        #     curl -sSL https://github.com/JohnnyMorganz/StyLua/releases/latest/download/stylua-linux.zip -o stylua.zip
+        #     sudo unzip -q stylua.zip -d /usr/local/bin
+        #     rm stylua.zip
 
       - name: Install plenary.nvim
         run: |
