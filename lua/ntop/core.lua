@@ -17,6 +17,42 @@ local function safe_lsp_get_clients()
   return vim.lsp.get_clients({}) or {}
 end
 
+local function build_process_tree(tasks)
+  local tree = {}
+  local children = {}
+
+  -- First pass: organize parent-child relationships
+  for _, task in ipairs(tasks) do
+    if not children[task.pid] then
+      children[task.pid] = {}
+    end
+    if task.ppid then
+      children[task.ppid] = children[task.ppid] or {}
+      table.insert(children[task.ppid], task)
+    else
+      table.insert(tree, task)
+    end
+  end
+
+  -- Second pass: build hierarchical display
+  local function add_children(parent, depth, result)
+    for _, child in ipairs(children[parent.pid] or {}) do
+      child._display_name = string.rep("  ", depth) .. "├─ " .. child.name
+      table.insert(result, child)
+      add_children(child, depth + 1, result)
+    end
+  end
+
+  local result = {}
+  for _, root in ipairs(tree) do
+    root._display_name = root.name
+    table.insert(result, root)
+    add_children(root, 1, result)
+  end
+
+  return result
+end
+
 local function get_process_info(pid)
   if uv.os_uname().sysname == "Linux" then
     local stat = io.open("/proc/"..pid.."/stat")
@@ -134,24 +170,49 @@ local function get_lsp_processes()
 end
 
 function M.spawn(cmd, args, on_exit)
-  local handle, pid = uv.spawn(cmd, {
+  local handle, pid
+  local spawn_opts = {
     args = args,
-    stdio = { nil, nil, nil }
-  }, function(code, signal)
-    if on_exit then pcall(on_exit, code, signal) end
-    M._jobs[pid], M._samples[pid] = nil, nil
-  end)
+    stdio = { nil, nil, nil },
+    hide = true
+  }
 
-  if not handle then
+  -- Store current PID as parent if available
+  local ppid = uv.getpid and uv.getpid() or nil
+
+  -- Try new API first
+  if uv.spawn then
+    handle, pid = uv.spawn(cmd, spawn_opts, function(code, signal)
+      if on_exit then pcall(on_exit, code, signal) end
+      M._jobs[pid], M._samples[pid] = nil, nil
+    end)
+  end
+
+  -- Fallback to old API if needed
+  if not handle and vim.fn and vim.fn.jobstart then
+    pid = vim.fn.jobstart(vim.tbl_flatten({cmd, args}), {
+      on_exit = function(_, code, signal)
+        if on_exit then pcall(on_exit, code, signal) end
+        M._jobs[pid], M._samples[pid] = nil, nil
+      end
+    })
+    if pid <= 0 then pid = nil end
+  end
+
+  if not pid then
     vim.notify("[ntop] Failed to spawn " .. cmd, vim.log.levels.ERROR)
     return nil
   end
 
-  M._jobs[pid] = {
-    handle = handle,
-    cmd = table.concat(vim.tbl_flatten({cmd, args}), " "),
-    created = uv.now()
-  }
+  if pid then
+    M._jobs[pid] = {
+      handle = handle,
+      cmd = table.concat(vim.tbl_flatten({cmd, args}), " "),
+      created = uv.now(),
+      ppid = ppid  -- Store parent PID for tree building
+    }
+  end
+
   return pid
 end
 
@@ -167,16 +228,26 @@ end
 function M.list_tasks(filter_str)
   local tasks = {}
 
+  -- 1. Collect all tasks (LSP, jobs, etc)
   vim.list_extend(tasks, get_lsp_processes())
 
+  -- Add tracked jobs
   for pid, job in pairs(M._jobs) do
-    if uv.process_kill(pid, 0) then
+    local process_exists = false
+    if job.handle and uv.process_kill then
+      process_exists = uv.process_kill(job.handle, 0)
+    else
+      process_exists = uv.process_kill(pid, 0)
+    end
+
+    if process_exists then
       local cpu, rss = snapshot(pid)
       table.insert(tasks, {
         id = pid,
         type = "job",
         name = job.cmd,
         pid = pid,
+        ppid = job.ppid, -- Make sure we store parent PID if available
         cpu = cpu,
         mem = rss,
         created = job.created
@@ -186,18 +257,23 @@ function M.list_tasks(filter_str)
     end
   end
 
+  -- 2. Build process tree hierarchy
+  tasks = build_process_tree(tasks)
+
+  -- 3. Apply filtering
   if filter_str and filter_str ~= "" then
     tasks = vim.tbl_filter(function(t)
       return require("ntop.task").matches(t, filter_str)
     end, tasks)
   end
 
+  -- 4. Apply sorting
   local key = M._config.sort_by or "cpu"
   table.sort(tasks, function(a, b)
     if key == "cpu" or key == "mem" then
       return (a[key] or 0) > (b[key] or 0)
     elseif key == "name" then
-      return (a.name or "") < (b.name or "")
+      return (a._display_name or a.name or "") < (b._display_name or b.name or "")
     else
       return (a.id or 0) < (b.id or 0)
     end
@@ -208,10 +284,34 @@ end
 
 function M.kill(pid, sig)
   sig = sig or "sigterm"
-  if uv.process_kill(pid, sig) then
+  local job = M._jobs[pid]
+
+  -- Try different kill methods
+  if job and job.handle and uv.process_kill then
+    -- New API with process handle
+    local ok, err = pcall(uv.process_kill, job.handle, sig)
+    if ok then
+      M._jobs[pid], M._samples[pid] = nil, nil
+      return true
+    end
+  end
+
+  -- Fallback methods
+  if uv.process_kill then
+    -- Try direct PID kill
+    local ok, err = pcall(uv.process_kill, pid, sig)
+    if ok then
+      M._jobs[pid], M._samples[pid] = nil, nil
+      return true
+    end
+  end
+
+  -- Final fallback to system kill
+  if os.execute("kill -"..sig.." "..pid) == 0 then
     M._jobs[pid], M._samples[pid] = nil, nil
     return true
   end
+
   return false
 end
 

@@ -1,0 +1,10 @@
+:Ntop           Open dashboard (auto‑refreshes every g:ntop_refresh_rate)
+:NtopKill {pid} Confirm then send default signal (sigterm) to {pid}
+:NtopSignal {sig} {pid}  Send arbitrary signal
+
+Mappings inside the ntop window ~
+  r          refresh now
+  s          cycle sort key (cpu → mem → id → name)
+  /          set filter string
+  k          prompt for PID to kill
+  q          close window

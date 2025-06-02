@@ -11,7 +11,9 @@ local M = {
   state = {
     filter = "",
     sort_by = "cpu",
-    max_chart_items = 10
+    max_chart_items = 10,
+    sort_cycle = { "cpu", "mem", "id", "name" },
+    current_sort_index = 1
   }
 }
 
@@ -42,7 +44,7 @@ local function table_lines(tasks)
       t.cpu,
       human(t.mem),
       t.type:sub(1, 6),
-      (t.name or "unknown"):sub(1, name_w)
+      (t._display_name or t.name or "unknown"):sub(1, name_w)
     )
     lines[#lines + 1] = line
   end
@@ -91,26 +93,31 @@ end
 function M.refresh()
   if not (M._buf and api.nvim_buf_is_valid(M._buf)) then return end
 
+  -- Save current cursor position before refresh
+  local current_line = 1
+  if M._win and api.nvim_win_is_valid(M._win) then
+    current_line = api.nvim_win_get_cursor(M._win)[1]
+  end
+
   local tasks = core.list_tasks(M.state.filter)
   local lines = {}
   vim.list_extend(lines, table_lines(tasks))
   vim.list_extend(lines, chart_lines(tasks))
 
-  -- Ensure we have at least one line to prevent cursor errors
   if #lines == 0 then
     lines = { "No tasks found" }
   end
 
   api.nvim_buf_set_option(M._buf, "modifiable", true)
   api.nvim_buf_set_lines(M._buf, 0, -1, false, lines)
-
-  -- Only set cursor if we have content and window is valid
-  if #lines > 0 and M._win and api.nvim_win_is_valid(M._win) then
-    local cursor_line = math.min(3, #lines) -- Default to line 3 (after header) or last line
-    api.nvim_win_set_cursor(M._win, {cursor_line, 0})
-  end
-
   api.nvim_buf_set_option(M._buf, "modifiable", false)
+
+  -- Restore cursor position after refresh
+  if M._win and api.nvim_win_is_valid(M._win) then
+    -- Ensure we don't go past the end of the buffer
+    current_line = math.min(current_line, #lines)
+    api.nvim_win_set_cursor(M._win, {current_line, 0})
+  end
 end
 
 function M.open()
@@ -161,13 +168,31 @@ function M.open()
 
   map("q", wipe, "Close window")
   map("r", M.refresh, "Refresh now")
+  -- Then modify the sort cycling function:
   map("s", function()
-    local sort_cycle = { "cpu", "mem", "id", "name" }
-    local current = core._config.sort_by or "cpu"
-    local next_index = (vim.tbl_keys(sort_cycle)[current] % #sort_cycle + 1)
-    core._config.sort_by = sort_cycle[next_index]
+    -- Get current sort key
+    local current_key = core._config.sort_by or "cpu"
+
+    -- Find current index in cycle
+    local current_index = 1
+    for i, key in ipairs(M.state.sort_cycle) do
+      if key == current_key then
+        current_index = i
+        break
+      end
+    end
+
+    -- Calculate next index safely
+    local next_index = (current_index % #M.state.sort_cycle) + 1
+    local next_key = M.state.sort_cycle[next_index]
+
+    -- Update config and refresh
+    core._config.sort_by = next_key
     M.refresh()
-  end, "Cycle sort")
+
+    -- Show current sort mode in status
+    vim.notify("Sorting by: " .. next_key, vim.log.levels.INFO)
+  end, "Cycle sort mode")
 
   map("/", function()
     vim.ui.input({ prompt = "Filter: " }, function(input)
@@ -178,7 +203,7 @@ function M.open()
     end)
   end, "Set filter")
 
-  map("k", function()
+  map("K", function()
     vim.ui.input({ prompt = "PID to kill: " }, function(input)
       if input then
         local pid = tonumber(input)
@@ -189,6 +214,16 @@ function M.open()
       end
     end)
   end, "Kill task")
+
+  map("j", function()
+    local cur = api.nvim_win_get_cursor(M._win)
+    api.nvim_win_set_cursor(M._win, {cur[1]+1, cur[2]})
+  end, "Move down")
+
+  map("k", function()
+    local cur = api.nvim_win_get_cursor(M._win)
+    api.nvim_win_set_cursor(M._win, {math.max(3, cur[1]-1), cur[2]})
+  end, "Move up")
 
   -- Initial render
   M.refresh()
