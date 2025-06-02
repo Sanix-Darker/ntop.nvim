@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      NVIM_MINIMAL_INIT: "./tests/minimal_init.lua"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Neovim nightly
+        uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: nightly
+
+      - name: Install LuaRocks & test dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y luarocks git
+          sudo luarocks install busted
+          sudo luarocks install luassert
+
+      - name: Install Stylua (formatter)
+        run: |
+          curl -sSL https://github.com/JohnnyMorganz/StyLua/releases/latest/download/stylua-linux.zip -o stylua.zip
+          sudo unzip -q stylua.zip -d /usr/local/bin
+          rm stylua.zip
+
+      - name: Install plenary.nvim
+        run: |
+          mkdir -p "${HOME}/.local/share/nvim/site/pack/vendor/start"
+          git clone --depth 1 https://github.com/nvim-lua/plenary.nvim \
+            "${HOME}/.local/share/nvim/site/pack/vendor/start/plenary.nvim"
+
+      - name: Run test‑suite
+        run: |
+          nvim --headless -c "lua _G.MINIMAL_INIT=vim.env.NVIM_MINIMAL_INIT" \
+               -c "PlenaryBustedDirectory tests/ { minimal_init = vim.env.NVIM_MINIMAL_INIT }" \
+               +qall
