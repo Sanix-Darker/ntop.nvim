@@ -1,6 +1,6 @@
 ## ntop.nvim
 
-![demo](./demo.gif)
+![screen](./screen.png)
 
 ntop.nvim is a minimalist “top/htop”-style dashboard for Neovim that lists every running
 LSP server and background job, lets you refresh in place, and kill the hogs
@@ -51,6 +51,10 @@ require("ntop").setup({
   default_signal    = "sigterm",  -- or "sigkill"
 })
 ```
+
+## DEMO
+
+![demo](./demo.gif)
 
 ## DEVELOPMENT
 
